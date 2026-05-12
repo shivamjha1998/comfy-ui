@@ -174,8 +174,8 @@ def build_ui() -> gr.Blocks:
             with gr.Column(scale=1):
                 gr.Markdown("### ③ Parameters")
                 face_index = gr.Number(value=0, precision=0, label="Face index (0 = first detected)")
-                face_restore = gr.Slider(0.0, 1.0, value=0.85, step=0.05,
-                                         label="Face restore strength (higher = smoother)")
+                face_restore = gr.Slider(0.0, 1.0, value=0.0, step=0.05,
+                                         label="Face restore strength (0 = off; > 0.7 only safe for clips ≤ ~10 s)")
                 detect_gender = gr.Dropdown(["no", "male", "female"], value="no", label="Gender filter")
                 enable_interp = gr.Checkbox(value=False,
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")

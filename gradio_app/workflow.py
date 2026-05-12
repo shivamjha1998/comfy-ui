@@ -71,10 +71,14 @@ def patch_wf_a(template: dict[str, Any], params: WfAParams) -> dict[str, Any]:
     _set(g, "2", "image", params.source_image)
     _set(g, "3", "input_faces_index", str(params.face_index))
     _set(g, "3", "detect_gender_input", params.detect_gender)
-    # ReActor's codeformer_weight is inverted from intuition: 0 = max restoration,
-    # 1 = preserve raw inswapper output. Invert so the UI slider reads naturally
-    # ("higher = smoother face").
-    _set(g, "3", "codeformer_weight", 1.0 - float(params.face_restore_strength))
+    # Face restoration toggle: strength <= 0 means "off". On a 16 GB Mac, GFPGAN
+    # restoration is fine for short clips (~10 s) but eats too much unified memory
+    # for longer clips and either silently writes zeros or OOM-kills ComfyUI.
+    # Users who upload longer clips should slide this to 0.
+    if float(params.face_restore_strength) <= 0.0:
+        _set(g, "3", "face_restore_model", "none")
+    else:
+        _set(g, "3", "codeformer_weight", 1.0 - float(params.face_restore_strength))
     # If frame interp is on, RIFE 2× doubles frame count → bump output frame rate
     # so playback stays real-time. If interp is disabled, rewire VideoCombine to
     # read directly from ReActor (node 3) and drop the RIFE node entirely.
