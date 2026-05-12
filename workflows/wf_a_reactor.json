@@ -1,0 +1,101 @@
+{
+  "_meta": {
+    "name": "WF-A: ReActor Face Swap",
+    "version": "0.1.0-draft",
+    "spec_section": "ComfyUI_FaceSwap_System_Spec.md §5-1",
+    "_notes": [
+      "DRAFT TEMPLATE — node class names and input keys are based on the most",
+      "common ReActor / VideoHelperSuite / FaceRestore / RIFE versions as of",
+      "early 2026. They MUST be verified against the actual installed nodes",
+      "after the first container build by exporting a working graph from the",
+      "ComfyUI UI and diffing.",
+      "",
+      "Patched at runtime by gradio_app/workflow.py. Search-and-replace targets",
+      "are flagged with '__PATCH_*__' so the patcher fails loudly on missing keys."
+    ],
+    "patch_targets": {
+      "source_image":          "node 2 → inputs.image",
+      "target_video":          "node 1 → inputs.video",
+      "face_index":            "node 3 → inputs.input_faces_index",
+      "face_restore_strength": "node 3 → inputs.codeformer_weight",
+      "detect_gender":         "node 3 → inputs.detect_gender_input",
+      "output_codec":          "node 6 → inputs.video_format",
+      "enable_frame_interp":   "node 5 enabled flag (toggle node connection)"
+    }
+  },
+
+  "1": {
+    "class_type": "VHS_LoadVideo",
+    "_meta": { "title": "Load Target Video" },
+    "inputs": {
+      "video": "__PATCH_TARGET_VIDEO__",
+      "force_rate": 0,
+      "force_size": "Disabled",
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "skip_first_frames": 0,
+      "select_every_nth": 1
+    }
+  },
+
+  "2": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "Load Source Face" },
+    "inputs": {
+      "image": "__PATCH_SOURCE_IMAGE__"
+    }
+  },
+
+  "3": {
+    "class_type": "ReActorFaceSwap",
+    "_meta": { "title": "ReActor Face Swap" },
+    "inputs": {
+      "enabled": true,
+      "swap_model": "inswapper_128.onnx",
+      "facedetection": "retinaface_resnet50",
+      "face_restore_model": "GFPGANv1.4.pth",
+      "face_restore_visibility": 1.0,
+      "codeformer_weight": 0.3,
+      "detect_gender_input": "no",
+      "detect_gender_source": "no",
+      "input_faces_index": "0",
+      "source_faces_index": "0",
+      "console_log_level": 1,
+      "input_image": ["1", 0],
+      "source_image": ["2", 0]
+    }
+  },
+
+  "5": {
+    "class_type": "RIFE VFI",
+    "_meta": { "title": "RIFE Frame Interpolation (optional)" },
+    "inputs": {
+      "ckpt_name": "rife47.pth",
+      "clear_cache_after_n_frames": 10,
+      "multiplier": 2,
+      "fast_mode": true,
+      "ensemble": true,
+      "scale_factor": 1.0,
+      "frames": ["3", 0]
+    }
+  },
+
+  "6": {
+    "class_type": "VHS_VideoCombine",
+    "_meta": { "title": "Combine Frames + Audio" },
+    "inputs": {
+      "frame_rate": 30,
+      "loop_count": 0,
+      "filename_prefix": "faceswap/wfa",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "pingpong": false,
+      "save_output": true,
+      "images": ["5", 0],
+      "audio": ["1", 2]
+    }
+  }
+}

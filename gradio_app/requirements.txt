@@ -1,0 +1,4 @@
+gradio>=5.11.0
+requests>=2.31
+websocket-client>=1.7
+Pillow>=10.0

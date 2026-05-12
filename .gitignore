@@ -1,0 +1,55 @@
+# Secrets — NEVER commit
+.env
+*.pem
+*.key
+~/.ssh/
+
+# Build artifacts
+.build-logs/
+*.sqsh
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python virtualenvs
+venv/
+.venv/
+env/
+
+# IDE / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local model files / outputs (these belong on /lustre, not in the repo)
+models/
+output/
+input/
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.gguf
+
+# Local test media
+test_videos/
+test_images/
+tmpxu3qitcn.mp4
+
+# Client / SoftBank confidential — DO NOT COMMIT
+ABC_SoftBank_Connection_Runbook.md
+startUp.md
+ABC様_*.pdf
+【顧客マニュアル】*.pdf
+Task_Specification_*.docx
+ngc-security-scan*.csv
+
+# Cloned upstream ComfyUI (has its own .git; users clone separately)
+ComfyUI/
+
+# Runtime logs from run.sh
+.logs/
