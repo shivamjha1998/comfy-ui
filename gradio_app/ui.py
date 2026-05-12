@@ -8,18 +8,23 @@ Flow:
 """
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import traceback
 from pathlib import Path
 from typing import Generator
 
+import cv2
 import gradio as gr
+from imageio_ffmpeg import get_ffmpeg_exe
 
 from .comfyui_client import ComfyUIClient, ComfyUIError, UploadedFile
 from .workflow import WfAParams, WorkflowError, load_template, patch_wf_a
 
 
 _client: ComfyUIClient | None = None
+_MAX_WIDTH = 1280
+_MAX_FPS = 30
 
 
 def _get_client() -> ComfyUIClient:
@@ -27,6 +32,35 @@ def _get_client() -> ComfyUIClient:
     if _client is None:
         _client = ComfyUIClient()
     return _client
+
+
+def _maybe_downscale_video(path: str) -> tuple[str, str | None]:
+    """If the video is > _MAX_WIDTH or > _MAX_FPS, transcode to a temp file.
+
+    Returns (path_to_use, status_message_or_None). The 1080p decode path through
+    VHS_LoadVideo + cv2 silently produces zero-frames on Mac (pyav/cv2 ffmpeg
+    dylib clash), so we normalize anything bigger to 1280p / 30 fps before upload.
+    """
+    cap = cv2.VideoCapture(path)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+
+    if w <= _MAX_WIDTH and fps <= _MAX_FPS + 0.5:
+        return path, None
+
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+    cmd = [
+        get_ffmpeg_exe(), "-y", "-i", path,
+        "-vf", f"scale={_MAX_WIDTH}:-2,fps={_MAX_FPS}",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        out,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    msg = f"Downscaled {w}×{h}@{fps:.0f}fps → {_MAX_WIDTH}×?@{_MAX_FPS}fps"
+    return out, msg
 
 
 def _run(
@@ -51,8 +85,13 @@ def _run(
         yield ("⏳ Uploading source image…", None)
         src: UploadedFile = client.upload(source_file)
 
-        yield ("⏳ Uploading target video…", None)
-        tgt: UploadedFile = client.upload(target_video)
+        yield ("⏳ Preparing target video…", None)
+        target_path, downscale_msg = _maybe_downscale_video(target_video)
+        if downscale_msg:
+            yield (f"⏳ {downscale_msg}; uploading…", None)
+        else:
+            yield ("⏳ Uploading target video…", None)
+        tgt: UploadedFile = client.upload(target_path)
 
         yield ("⏳ Building workflow…", None)
         template = load_template("wf_a_reactor")
