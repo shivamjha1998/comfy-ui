@@ -53,6 +53,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Apply Mac-only patches to ComfyUI-ReActor (no-op if already patched, or if
+# the custom_node isn't installed yet).
+if [ "$(uname)" = "Darwin" ]; then
+  bash "$REPO_DIR/scripts/patch_reactor_mac.sh"
+fi
+
 echo "[run.sh] starting ComfyUI on :$COMFY_PORT  -> $COMFY_LOG"
 ( cd "$REPO_DIR/ComfyUI" && exec "$VENV_PY" main.py --listen 127.0.0.1 --port "$COMFY_PORT" ) >"$COMFY_LOG" 2>&1 &
 COMFY_PID=$!
