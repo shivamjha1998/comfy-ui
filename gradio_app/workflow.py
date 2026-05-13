@@ -32,6 +32,7 @@ class WfAParams:
     face_restore_strength: float = 0.85
     detect_gender: str = "no"   # "no" | "male" | "female"
     enable_frame_interp: bool = False
+    enable_face_boost: bool = True   # ReActor's per-face-crop upscale pass (sharper eyes/skin)
 
 
 def load_template(workflow_id: str) -> dict[str, Any]:
@@ -79,6 +80,9 @@ def patch_wf_a(template: dict[str, Any], params: WfAParams) -> dict[str, Any]:
         _set(g, "3", "face_restore_model", "none")
     else:
         _set(g, "3", "codeformer_weight", 1.0 - float(params.face_restore_strength))
+    # Face boost: ReActor upscales the face crop with the boost model before
+    # pasting back — biggest single quality lever for eye/skin detail.
+    _set(g, "10", "enabled", bool(params.enable_face_boost))
     # If frame interp is on, RIFE 2× doubles frame count → bump output frame rate
     # so playback stays real-time. If interp is disabled, rewire VideoCombine to
     # read directly from ReActor (node 3) and drop the RIFE node entirely.

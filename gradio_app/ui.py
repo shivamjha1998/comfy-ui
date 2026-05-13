@@ -182,6 +182,7 @@ def _run(
     face_restore_strength: float,
     detect_gender: str,
     enable_interp: bool,
+    enable_face_boost: bool,
 ) -> Generator[tuple[str, str | None], None, None]:
     """Generator yielding (status_text, output_video_path_or_None)."""
     try:
@@ -223,6 +224,7 @@ def _run(
             face_restore_strength=float(face_restore_strength),
             detect_gender=detect_gender,
             enable_frame_interp=bool(enable_interp),
+            enable_face_boost=bool(enable_face_boost),
         )
 
         result_chunk_paths: list[str] = []
@@ -269,6 +271,8 @@ def build_ui() -> gr.Blocks:
                 detect_gender = gr.Dropdown(["no", "male", "female"], value="no", label="Gender filter")
                 enable_interp = gr.Checkbox(value=False,
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")
+                enable_face_boost = gr.Checkbox(value=True,
+                                                label="Face boost (sharper eyes/skin — recommended)")
                 run_btn = gr.Button("④ Execute", variant="primary", size="lg")
 
         status = gr.Textbox(label="Status", interactive=False)
@@ -276,7 +280,7 @@ def build_ui() -> gr.Blocks:
 
         run_btn.click(
             _run,
-            inputs=[source, target, face_index, face_restore, detect_gender, enable_interp],
+            inputs=[source, target, face_index, face_restore, detect_gender, enable_interp, enable_face_boost],
             outputs=[status, result],
         )
 

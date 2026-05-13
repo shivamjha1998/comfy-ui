@@ -63,7 +63,21 @@
       "source_faces_index": "0",
       "console_log_level": 1,
       "input_image": ["1", 0],
-      "source_image": ["2", 0]
+      "source_image": ["2", 0],
+      "face_boost": ["10", 0]
+    }
+  },
+
+  "10": {
+    "class_type": "ReActorFaceBoost",
+    "_meta": { "title": "ReActor Face Boost (sharper face crop)" },
+    "inputs": {
+      "enabled": false,
+      "boost_model": "GFPGANv1.4.pth",
+      "interpolation": "Lanczos",
+      "visibility": 1.0,
+      "codeformer_weight": 0.5,
+      "restore_with_main_after": false
     }
   },
 
