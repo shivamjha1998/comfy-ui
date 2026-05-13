@@ -271,8 +271,8 @@ def build_ui() -> gr.Blocks:
                 detect_gender = gr.Dropdown(["no", "male", "female"], value="no", label="Gender filter")
                 enable_interp = gr.Checkbox(value=False,
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")
-                enable_face_boost = gr.Checkbox(value=False,
-                                                label="Face boost (extra face crop upscale — can cause edge warping)")
+                enable_face_boost = gr.Checkbox(value=True,
+                                                label="Face boost (sharper eyes/skin — recommended)")
                 run_btn = gr.Button("④ Execute", variant="primary", size="lg")
 
         status = gr.Textbox(label="Status", interactive=False)

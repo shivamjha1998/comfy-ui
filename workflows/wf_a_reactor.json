@@ -52,7 +52,7 @@
     "_meta": { "title": "ReActor Face Swap" },
     "inputs": {
       "enabled": true,
-      "swap_model": "hyperswap_1a_256.onnx",
+      "swap_model": "inswapper_128.onnx",
       "facedetection": "retinaface_resnet50",
       "face_restore_model": "GFPGANv1.4.pth",
       "face_restore_visibility": 1.0,
