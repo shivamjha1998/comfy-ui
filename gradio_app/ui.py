@@ -42,10 +42,12 @@ _CHUNK_S_WITH_RESTORE = 10        # GFPGAN ceiling on 16 GB M4 is ~10–15 s
 _CHUNK_S_NO_RESTORE = 30          # plenty of headroom without restoration
 _STYLE_MATCH_SCAN_SECONDS = 5     # only scan first N s of target for a face frame
 _STYLE_MATCH_SAMPLE_EVERY = 5     # check every Nth frame to keep scan fast
-# Gemini image-generation model. Default to Nano Banana Pro (gemini-3-pro-image)
-# for best instruction-following on the style-match prompt. Override via env var
-# if you want the cheaper / faster gemini-2.5-flash-image or gemini-3.1-flash-image-preview.
-_GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3-pro-image-preview")
+# Gemini image-generation model. Default to gemini-2.5-flash-image (original
+# Nano Banana) because it's the only image-gen model available on the free tier
+# — gemini-3-pro-image-preview returns 429 RESOURCE_EXHAUSTED with limit:0 unless
+# you enable billing on the Google Cloud project. Users with billing can override
+# to gemini-3-pro-image-preview for noticeably better instruction-following.
+_GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
 
 _STYLE_MATCH_PROMPT = (
     "Two images are provided. Image 1 is a frame from a video showing a person in a scene. "
@@ -99,7 +101,7 @@ def _find_first_face_frame(video_path: str) -> Image.Image | None:
 
 
 def _nano_banana_match(source_path: str, target_frame: Image.Image) -> str:
-    """Call Gemini 2.5 Flash Image to render the source face in the style of the
+    """Call Gemini Nano Banana to render the source face in the style of the
     target frame. Returns the path to a temp PNG. Raises on any failure.
     """
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -107,13 +109,25 @@ def _nano_banana_match(source_path: str, target_frame: Image.Image) -> str:
         raise WorkflowError("GEMINI_API_KEY not set (Nano Banana style-match disabled)")
 
     from google import genai
+    from google.genai import errors as genai_errors
     client = genai.Client(api_key=api_key)
 
     source_img = Image.open(source_path)
-    response = client.models.generate_content(
-        model=_GEMINI_IMAGE_MODEL,
-        contents=[_STYLE_MATCH_PROMPT, target_frame, source_img],
-    )
+    try:
+        response = client.models.generate_content(
+            model=_GEMINI_IMAGE_MODEL,
+            contents=[_STYLE_MATCH_PROMPT, target_frame, source_img],
+        )
+    except genai_errors.ClientError as exc:
+        # As of 2026 ALL Gemini image-gen models (incl. gemini-2.5-flash-image)
+        # require billing — free tier returns 429 RESOURCE_EXHAUSTED with limit:0.
+        # Surface a clean actionable message instead of the giant stack trace.
+        if getattr(exc, "code", None) == 429 or "RESOURCE_EXHAUSTED" in str(exc):
+            raise WorkflowError(
+                "Gemini quota exhausted. Image generation needs billing enabled on "
+                "your Google Cloud project — see https://aistudio.google.com/billing"
+            ) from exc
+        raise
 
     # Newer SDK shape: response.candidates[0].content.parts; older: response.parts
     parts = []
