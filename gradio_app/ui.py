@@ -42,6 +42,10 @@ _CHUNK_S_WITH_RESTORE = 10        # GFPGAN ceiling on 16 GB M4 is ~10–15 s
 _CHUNK_S_NO_RESTORE = 30          # plenty of headroom without restoration
 _STYLE_MATCH_SCAN_SECONDS = 5     # only scan first N s of target for a face frame
 _STYLE_MATCH_SAMPLE_EVERY = 5     # check every Nth frame to keep scan fast
+# Gemini image-generation model. Default to Nano Banana Pro (gemini-3-pro-image)
+# for best instruction-following on the style-match prompt. Override via env var
+# if you want the cheaper / faster gemini-2.5-flash-image or gemini-3.1-flash-image-preview.
+_GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
 _STYLE_MATCH_PROMPT = (
     "Two images are provided. Image 1 is a frame from a video showing a person in a scene. "
@@ -107,7 +111,7 @@ def _nano_banana_match(source_path: str, target_frame: Image.Image) -> str:
 
     source_img = Image.open(source_path)
     response = client.models.generate_content(
-        model="gemini-2.5-flash-image",
+        model=_GEMINI_IMAGE_MODEL,
         contents=[_STYLE_MATCH_PROMPT, target_frame, source_img],
     )
 
