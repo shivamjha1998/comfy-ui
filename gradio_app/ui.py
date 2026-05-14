@@ -42,21 +42,25 @@ _CHUNK_S_WITH_RESTORE = 10        # GFPGAN ceiling on 16 GB M4 is ~10–15 s
 _CHUNK_S_NO_RESTORE = 30          # plenty of headroom without restoration
 _STYLE_MATCH_SCAN_SECONDS = 5     # only scan first N s of target for a face frame
 _STYLE_MATCH_SAMPLE_EVERY = 5     # check every Nth frame to keep scan fast
-# Gemini image-generation model. Default to gemini-2.5-flash-image (original
-# Nano Banana) because it's the only image-gen model available on the free tier
-# — gemini-3-pro-image-preview returns 429 RESOURCE_EXHAUSTED with limit:0 unless
-# you enable billing on the Google Cloud project. Users with billing can override
-# to gemini-3-pro-image-preview for noticeably better instruction-following.
-_GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+_FACE_CROP_PADDING = 0.6          # fraction of bbox size to pad on each axis (captures hair/jaw/neck)
+# Gemini image-generation model. Default to Nano Banana Pro
+# (gemini-3-pro-image-preview) — its "thinking" mode follows the identity-keep
+# instruction far better than gemini-2.5-flash-image, which we A/B'd and found
+# routinely keeps the WRONG identity for complex multi-image swap prompts.
+# Requires billing enabled on the Google Cloud project; ~$0.13 per call.
+# Override via GEMINI_IMAGE_MODEL env var if you want the cheaper Flash variant.
+_GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
+# Identity-preserving prompt. Empirically: Pro is much more reliable when the
+# source face is supplied FIRST and the target style image SECOND, and when the
+# instruction emphasizes "keep Image 1's identity, only borrow Image 2's pose".
 _STYLE_MATCH_PROMPT = (
-    "Two images are provided. Image 1 is a frame from a video showing a person in a scene. "
-    "Image 2 is a reference photograph of a different person whose face we want to use. "
-    "Generate a new photographic portrait of the person from Image 2 — same identity and face "
-    "features — but pose, framing, head angle, eye gaze, facial expression, lighting direction, "
-    "color palette, and background composition must exactly match Image 1. The output must look "
-    "like a still photograph taken in the same moment and place as Image 1, just with the "
-    "person's identity replaced with the one from Image 2. Output only the new portrait, no text."
+    "Take the person from Image 1 (the reference face — keep their identity, "
+    "face shape, eyes, nose, mouth, skin tone, beard if any). "
+    "Place that person into the pose, head angle, expression, lighting, and "
+    "framing shown in Image 2. The output should clearly look like the person "
+    "from Image 1, NOT the person in Image 2 — only borrow the pose and lighting "
+    "from Image 2. Output one photographic head-and-shoulders crop."
 )
 
 
@@ -67,10 +71,16 @@ def _get_client() -> ComfyUIClient:
     return _client
 
 
-def _find_first_face_frame(video_path: str) -> Image.Image | None:
-    """Scan up to _STYLE_MATCH_SCAN_SECONDS of the video for a frame with a
-    detectable face. Returns the PIL image of the first match, or None if no
-    detector is available or no face is found in the scan window.
+def _find_first_face_crop(video_path: str) -> Image.Image | None:
+    """Scan up to _STYLE_MATCH_SCAN_SECONDS of the video for the first frame
+    with a detectable face, and return a PADDED CROP around that face (not the
+    full frame). Returns None if no detector is available or no face is found.
+
+    Sending Gemini just the face region — not the whole frame — keeps the model
+    focused on pose/lighting/expression of the face we want to match, and stops
+    it from spending compute regenerating the background that ReActor will
+    discard anyway. The crop includes _FACE_CROP_PADDING worth of margin on
+    each axis so hair, jaw, and neck context is preserved.
     """
     if not _FACE_DETECTOR_PATH.is_file():
         return None
@@ -84,7 +94,7 @@ def _find_first_face_frame(video_path: str) -> Image.Image | None:
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     max_frames = int(fps * _STYLE_MATCH_SCAN_SECONDS)
     idx = 0
-    found: Image.Image | None = None
+    crop: Image.Image | None = None
     while idx < max_frames:
         ok, frame = cap.read()
         if not ok:
@@ -92,12 +102,24 @@ def _find_first_face_frame(video_path: str) -> Image.Image | None:
         if idx % _STYLE_MATCH_SAMPLE_EVERY == 0:
             results = model(frame, verbose=False)
             if results and len(results[0].boxes) > 0:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                found = Image.fromarray(rgb)
+                # Pick the largest face box (most prominent subject)
+                boxes = results[0].boxes.xyxy.cpu().numpy()
+                areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+                x1, y1, x2, y2 = boxes[int(areas.argmax())]
+                h_frame, w_frame = frame.shape[:2]
+                bw, bh = x2 - x1, y2 - y1
+                px, py = bw * _FACE_CROP_PADDING, bh * _FACE_CROP_PADDING
+                cx1 = max(0, int(x1 - px))
+                cy1 = max(0, int(y1 - py))
+                cx2 = min(w_frame, int(x2 + px))
+                cy2 = min(h_frame, int(y2 + py))
+                cropped_bgr = frame[cy1:cy2, cx1:cx2]
+                rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
+                crop = Image.fromarray(rgb)
                 break
         idx += 1
     cap.release()
-    return found
+    return crop
 
 
 def _nano_banana_match(source_path: str, target_frame: Image.Image) -> str:
@@ -114,9 +136,12 @@ def _nano_banana_match(source_path: str, target_frame: Image.Image) -> str:
 
     source_img = Image.open(source_path)
     try:
+        # Order matters: source first, then target frame. With Gemini Pro this
+        # reliably keeps the source identity while borrowing target's pose;
+        # the opposite order tends to preserve the WRONG identity.
         response = client.models.generate_content(
             model=_GEMINI_IMAGE_MODEL,
-            contents=[_STYLE_MATCH_PROMPT, target_frame, source_img],
+            contents=[_STYLE_MATCH_PROMPT, source_img, target_frame],
         )
     except genai_errors.ClientError as exc:
         # As of 2026 ALL Gemini image-gen models (incl. gemini-2.5-flash-image)
@@ -308,7 +333,7 @@ def _run(
                 yield ("⚠ GEMINI_API_KEY not set — skipping style-match, using raw source.", gr.skip(), gr.skip())
             else:
                 yield ("⏳ Scanning target for a frame with a face…", gr.skip(), gr.skip())
-                frame = _find_first_face_frame(target_video)
+                frame = _find_first_face_crop(target_video)
                 if frame is None:
                     yield ("⚠ No face found in first 5 s of target — using raw source.", gr.skip(), gr.skip())
                 else:
