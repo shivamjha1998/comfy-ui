@@ -310,7 +310,7 @@ def _run(
     face_restore_strength: float,
     detect_gender: str,
     enable_interp: bool,
-    enable_face_boost: bool,
+    face_boost_strength: float,
     enable_style_match: bool,
 ) -> Generator[tuple, None, None]:
     """Generator yielding (status_text, stylized_preview_path_or_skip, output_video_path_or_skip).
@@ -373,7 +373,7 @@ def _run(
             face_restore_strength=float(face_restore_strength),
             detect_gender=detect_gender,
             enable_frame_interp=bool(enable_interp),
-            enable_face_boost=bool(enable_face_boost),
+            face_boost_strength=float(face_boost_strength),
         )
 
         result_chunk_paths: list[str] = []
@@ -420,8 +420,8 @@ def build_ui() -> gr.Blocks:
                 detect_gender = gr.Dropdown(["no", "male", "female"], value="no", label="Gender filter")
                 enable_interp = gr.Checkbox(value=False,
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")
-                enable_face_boost = gr.Checkbox(value=False,
-                                                label="Face boost (extra face crop upscale — can cause edge warping)")
+                face_boost_strength = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
+                                                label="Face boost strength (0 = off; higher = sharper face but can warp edges)")
                 enable_style_match = gr.Checkbox(value=bool(os.environ.get("GEMINI_API_KEY")),
                                                  label="Style-match source to scene (Gemini Nano Banana — needs GEMINI_API_KEY)")
                 run_btn = gr.Button("④ Execute", variant="primary", size="lg")
@@ -433,7 +433,7 @@ def build_ui() -> gr.Blocks:
         run_btn.click(
             _run,
             inputs=[source, target, face_index, face_restore, detect_gender,
-                    enable_interp, enable_face_boost, enable_style_match],
+                    enable_interp, face_boost_strength, enable_style_match],
             outputs=[status, stylized_preview, result],
         )
 

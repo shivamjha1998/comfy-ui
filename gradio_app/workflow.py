@@ -32,7 +32,10 @@ class WfAParams:
     face_restore_strength: float = 0.85
     detect_gender: str = "no"   # "no" | "male" | "female"
     enable_frame_interp: bool = False
-    enable_face_boost: bool = True   # ReActor's per-face-crop upscale pass (sharper eyes/skin)
+    # ReActor's per-face-crop upscale pass. 0.0 = off entirely; >0 = enabled at
+    # that blend visibility (1.0 = full boost replace, 0.1 = barely-perceptible
+    # sharpening blended over the raw swap). 0.5 is a safe default.
+    face_boost_strength: float = 0.5
 
 
 def load_template(workflow_id: str) -> dict[str, Any]:
@@ -80,9 +83,16 @@ def patch_wf_a(template: dict[str, Any], params: WfAParams) -> dict[str, Any]:
         _set(g, "3", "face_restore_model", "none")
     else:
         _set(g, "3", "codeformer_weight", 1.0 - float(params.face_restore_strength))
-    # Face boost: ReActor upscales the face crop with the boost model before
-    # pasting back — biggest single quality lever for eye/skin detail.
-    _set(g, "10", "enabled", bool(params.enable_face_boost))
+    # Face boost: 0 = off; >0 = enabled, with the slider value as the blend
+    # visibility (1.0 = full boost replace, lower = blend with raw inswapper
+    # to keep edges natural).
+    boost_strength = max(0.0, min(1.0, float(params.face_boost_strength)))
+    if boost_strength <= 0.0:
+        _set(g, "10", "enabled", False)
+    else:
+        _set(g, "10", "enabled", True)
+        # Node's visibility field has min=0.1; clamp accordingly.
+        _set(g, "10", "visibility", max(0.1, boost_strength))
     # If frame interp is on, RIFE 2× doubles frame count → bump output frame rate
     # so playback stays real-time. If interp is disabled, rewire VideoCombine to
     # read directly from ReActor (node 3) and drop the RIFE node entirely.
