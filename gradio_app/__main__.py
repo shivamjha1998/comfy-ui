@@ -1,11 +1,20 @@
-"""Entrypoint: `python -m gradio_app` from inside the container."""
+"""Entrypoint: `python -m gradio_app`."""
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from .comfyui_client import ComfyUIClient
-from .config import CONFIG
-from .ui import build_ui
+# Load .env from the repo root before anything else reads os.environ
+# (e.g. GEMINI_API_KEY used by the Nano Banana style-match step).
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
+from .comfyui_client import ComfyUIClient  # noqa: E402
+from .config import CONFIG                 # noqa: E402
+from .ui import build_ui                   # noqa: E402
 
 
 def main() -> int:

@@ -2,3 +2,5 @@ gradio>=5.11.0
 requests>=2.31
 websocket-client>=1.7
 Pillow>=10.0
+google-genai>=0.3.0
+python-dotenv>=1.0

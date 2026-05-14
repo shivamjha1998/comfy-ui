@@ -25,10 +25,14 @@ from typing import Generator
 import cv2
 import gradio as gr
 from imageio_ffmpeg import get_ffmpeg_exe
+from PIL import Image
 
 from .comfyui_client import ComfyUIClient, ComfyUIError, UploadedFile
 from .workflow import WfAParams, WorkflowError, load_template, patch_wf_a
 
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_FACE_DETECTOR_PATH = _REPO_ROOT / "ComfyUI" / "models" / "ultralytics" / "bbox" / "face_yolov8m.pt"
 
 _client: ComfyUIClient | None = None
 _MAX_WIDTH = 1280
@@ -36,6 +40,18 @@ _MAX_FPS = 30
 _MAX_DURATION_S = 15 * 60         # refuse anything longer than 15 min
 _CHUNK_S_WITH_RESTORE = 10        # GFPGAN ceiling on 16 GB M4 is ~10–15 s
 _CHUNK_S_NO_RESTORE = 30          # plenty of headroom without restoration
+_STYLE_MATCH_SCAN_SECONDS = 5     # only scan first N s of target for a face frame
+_STYLE_MATCH_SAMPLE_EVERY = 5     # check every Nth frame to keep scan fast
+
+_STYLE_MATCH_PROMPT = (
+    "Two images are provided. Image 1 is a frame from a video showing a person in a scene. "
+    "Image 2 is a reference photograph of a different person whose face we want to use. "
+    "Generate a new photographic portrait of the person from Image 2 — same identity and face "
+    "features — but pose, framing, head angle, eye gaze, facial expression, lighting direction, "
+    "color palette, and background composition must exactly match Image 1. The output must look "
+    "like a still photograph taken in the same moment and place as Image 1, just with the "
+    "person's identity replaced with the one from Image 2. Output only the new portrait, no text."
+)
 
 
 def _get_client() -> ComfyUIClient:
@@ -43,6 +59,75 @@ def _get_client() -> ComfyUIClient:
     if _client is None:
         _client = ComfyUIClient()
     return _client
+
+
+def _find_first_face_frame(video_path: str) -> Image.Image | None:
+    """Scan up to _STYLE_MATCH_SCAN_SECONDS of the video for a frame with a
+    detectable face. Returns the PIL image of the first match, or None if no
+    detector is available or no face is found in the scan window.
+    """
+    if not _FACE_DETECTOR_PATH.is_file():
+        return None
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        return None
+
+    model = YOLO(str(_FACE_DETECTOR_PATH))
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    max_frames = int(fps * _STYLE_MATCH_SCAN_SECONDS)
+    idx = 0
+    found: Image.Image | None = None
+    while idx < max_frames:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if idx % _STYLE_MATCH_SAMPLE_EVERY == 0:
+            results = model(frame, verbose=False)
+            if results and len(results[0].boxes) > 0:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                found = Image.fromarray(rgb)
+                break
+        idx += 1
+    cap.release()
+    return found
+
+
+def _nano_banana_match(source_path: str, target_frame: Image.Image) -> str:
+    """Call Gemini 2.5 Flash Image to render the source face in the style of the
+    target frame. Returns the path to a temp PNG. Raises on any failure.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise WorkflowError("GEMINI_API_KEY not set (Nano Banana style-match disabled)")
+
+    from google import genai
+    client = genai.Client(api_key=api_key)
+
+    source_img = Image.open(source_path)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash-image",
+        contents=[_STYLE_MATCH_PROMPT, target_frame, source_img],
+    )
+
+    # Newer SDK shape: response.candidates[0].content.parts; older: response.parts
+    parts = []
+    cands = getattr(response, "candidates", None)
+    if cands:
+        parts = list(cands[0].content.parts)
+    elif hasattr(response, "parts"):
+        parts = list(response.parts)
+
+    for part in parts:
+        inline = getattr(part, "inline_data", None)
+        if inline and getattr(inline, "data", None):
+            out = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+            with open(out, "wb") as fh:
+                fh.write(inline.data)
+            return out
+
+    raise WorkflowError("Gemini returned no image in the response")
 
 
 def _video_duration_s(path: str) -> float:
@@ -183,38 +268,59 @@ def _run(
     detect_gender: str,
     enable_interp: bool,
     enable_face_boost: bool,
-) -> Generator[tuple[str, str | None], None, None]:
-    """Generator yielding (status_text, output_video_path_or_None)."""
+    enable_style_match: bool,
+) -> Generator[tuple, None, None]:
+    """Generator yielding (status_text, stylized_preview_path_or_skip, output_video_path_or_skip).
+
+    Use gr.skip() to leave an output untouched on a given yield.
+    """
     try:
         if not source_file or not target_video:
-            yield ("⚠ Please upload both a source image and a target video.", None)
+            yield ("⚠ Please upload both a source image and a target video.", gr.skip(), gr.skip())
             return
 
         client = _get_client()
         if not client.is_alive():
-            yield (f"⚠ ComfyUI is not reachable at {client.http_url}. Is the back-end up?", None)
+            yield (f"⚠ ComfyUI is not reachable at {client.http_url}. Is the back-end up?", gr.skip(), gr.skip())
             return
 
-        yield ("⏳ Uploading source image…", None)
-        src: UploadedFile = client.upload(source_file)
+        effective_source = source_file
+        if enable_style_match:
+            if not os.environ.get("GEMINI_API_KEY"):
+                yield ("⚠ GEMINI_API_KEY not set — skipping style-match, using raw source.", gr.skip(), gr.skip())
+            else:
+                yield ("⏳ Scanning target for a frame with a face…", gr.skip(), gr.skip())
+                frame = _find_first_face_frame(target_video)
+                if frame is None:
+                    yield ("⚠ No face found in first 5 s of target — using raw source.", gr.skip(), gr.skip())
+                else:
+                    yield ("⏳ Calling Gemini Nano Banana to style-match the source…", gr.skip(), gr.skip())
+                    try:
+                        effective_source = _nano_banana_match(source_file, frame)
+                        yield ("✓ Style-matched source ready.", effective_source, gr.skip())
+                    except Exception as exc:  # noqa: BLE001 — surface any Gemini issue and fall back
+                        yield (f"⚠ Style-match failed ({exc}); using raw source.", gr.skip(), gr.skip())
 
-        yield ("⏳ Preparing target video…", None)
+        yield ("⏳ Uploading source image…", gr.skip(), gr.skip())
+        src: UploadedFile = client.upload(effective_source)
+
+        yield ("⏳ Preparing target video…", gr.skip(), gr.skip())
         target_path, prep_msg = _prepare_video(target_video)
         if prep_msg:
-            yield (f"⏳ {prep_msg}", None)
+            yield (f"⏳ {prep_msg}", gr.skip(), gr.skip())
 
         duration = _video_duration_s(target_path)
         if duration > _MAX_DURATION_S:
-            yield (f"⚠ Video too long ({duration/60:.1f} min). Max {_MAX_DURATION_S//60} min.", None)
+            yield (f"⚠ Video too long ({duration/60:.1f} min). Max {_MAX_DURATION_S//60} min.", gr.skip(), gr.skip())
             return
 
         seconds_per_chunk = (
             _CHUNK_S_WITH_RESTORE if face_restore_strength > 0 else _CHUNK_S_NO_RESTORE
         )
 
-        yield (f"⏳ Splitting into ~{seconds_per_chunk}s chunks…", None)
+        yield (f"⏳ Splitting into ~{seconds_per_chunk}s chunks…", gr.skip(), gr.skip())
         chunk_dir, chunks = _chunk_video(target_path, seconds_per_chunk)
-        yield (f"⏳ {len(chunks)} chunk{'s' if len(chunks)!=1 else ''} to process.", None)
+        yield (f"⏳ {len(chunks)} chunk{'s' if len(chunks)!=1 else ''} to process.", gr.skip(), gr.skip())
 
         template = load_template("wf_a_reactor")
         base_params = WfAParams(
@@ -229,12 +335,12 @@ def _run(
 
         result_chunk_paths: list[str] = []
         for i, chunk_path in enumerate(chunks, 1):
-            yield (f"⚙ Chunk {i}/{len(chunks)} — processing…", None)
+            yield (f"⚙ Chunk {i}/{len(chunks)} — processing…", gr.skip(), gr.skip())
             result_chunk_paths.append(
                 _process_chunk(client, chunk_path, src.reference, base_params, template)
             )
 
-        yield (f"⏳ Concatenating {len(result_chunk_paths)} chunk{'s' if len(result_chunk_paths)!=1 else ''}…", None)
+        yield (f"⏳ Concatenating {len(result_chunk_paths)} chunk{'s' if len(result_chunk_paths)!=1 else ''}…", gr.skip(), gr.skip())
         final = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         _concat_videos(result_chunk_paths, final)
 
@@ -245,13 +351,13 @@ def _run(
         if target_path != target_video:
             Path(target_path).unlink(missing_ok=True)
 
-        yield ("✓ Done.", final)
+        yield ("✓ Done.", gr.skip(), final)
 
     except (ComfyUIError, WorkflowError) as exc:
-        yield (f"✗ {exc}", None)
+        yield (f"✗ {exc}", gr.skip(), gr.skip())
     except Exception as exc:  # noqa: BLE001 — UI surface
         traceback.print_exc()
-        yield (f"✗ Unexpected error: {exc}", None)
+        yield (f"✗ Unexpected error: {exc}", gr.skip(), gr.skip())
 
 
 def build_ui() -> gr.Blocks:
@@ -273,15 +379,19 @@ def build_ui() -> gr.Blocks:
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")
                 enable_face_boost = gr.Checkbox(value=False,
                                                 label="Face boost (extra face crop upscale — can cause edge warping)")
+                enable_style_match = gr.Checkbox(value=bool(os.environ.get("GEMINI_API_KEY")),
+                                                 label="Style-match source to scene (Gemini Nano Banana — needs GEMINI_API_KEY)")
                 run_btn = gr.Button("④ Execute", variant="primary", size="lg")
 
         status = gr.Textbox(label="Status", interactive=False)
+        stylized_preview = gr.Image(label="Style-matched source (Gemini output)", interactive=False, type="filepath")
         result = gr.Video(label="Result", interactive=False)
 
         run_btn.click(
             _run,
-            inputs=[source, target, face_index, face_restore, detect_gender, enable_interp, enable_face_boost],
-            outputs=[status, result],
+            inputs=[source, target, face_index, face_restore, detect_gender,
+                    enable_interp, enable_face_boost, enable_style_match],
+            outputs=[status, stylized_preview, result],
         )
 
     return demo
