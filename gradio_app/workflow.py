@@ -28,7 +28,8 @@ class WorkflowError(RuntimeError):
 class WfAParams:
     source_image: str           # uploaded filename ref
     target_video: str
-    face_index: int = 0
+    target_face_index: int = 0
+    source_face_index: int = 0
     face_restore_strength: float = 0.85
     detect_gender: str = "no"   # "no" | "male" | "female"
     enable_frame_interp: bool = False
@@ -73,7 +74,8 @@ def patch_wf_a(template: dict[str, Any], params: WfAParams) -> dict[str, Any]:
     g = _strip_meta(template)
     _set(g, "1", "video", params.target_video)
     _set(g, "2", "image", params.source_image)
-    _set(g, "3", "input_faces_index", str(params.face_index))
+    _set(g, "3", "input_faces_index", str(params.target_face_index))
+    _set(g, "3", "source_faces_index", str(params.source_face_index))
     _set(g, "3", "detect_gender_input", params.detect_gender)
     # Face restoration toggle: strength <= 0 means "off". On a 16 GB Mac, GFPGAN
     # restoration is fine for short clips (~10 s) but eats too much unified memory
