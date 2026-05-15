@@ -42,6 +42,25 @@ Starts ComfyUI on `:8188` and Gradio on `http://127.0.0.1:7860`. Press `Ctrl+C` 
 GRADIO_HOST=0.0.0.0 ./run.sh
 ```
 
+## Share a public URL
+
+`./run.sh --public` adds a Cloudflare quick tunnel and prints a `https://<random>.trycloudflare.com` URL you can hand to someone outside your network. The tunnel lives as long as the script runs; the URL changes each restart. No Cloudflare account, no domain — just a free quick tunnel.
+
+```bash
+brew install cloudflared       # one-time
+
+# Highly recommended before going public: gate the UI behind a password.
+# Put these in .env (gitignored):
+#   GRADIO_AUTH_USER=demo
+#   GRADIO_AUTH_PASS=<choose something>
+
+./run.sh --public
+```
+
+The script's banner will print the public URL and the basic-auth user. Share `URL + user/pass`. If `GRADIO_AUTH_USER` / `GRADIO_AUTH_PASS` aren't set, you'll get a loud warning — anyone with the URL can drive your face-swap. Don't skip the password for a real demo.
+
+`Ctrl+C` tears down ComfyUI, Gradio, and the tunnel together.
+
 ## How to use it
 
 1. **Upload a source face image.** Any clear photo with a visible face. The collapsible *Source Face Index Preview* draws numbered boxes on every face it detects, so you can pick which one with the *Source face index* number input.
