@@ -138,7 +138,12 @@ PUBLIC_URL=""
 if $PUBLIC; then
   CF_LOG="$LOG_DIR/cloudflared.log"
   echo "[run.sh] starting Cloudflare quick tunnel  -> $CF_LOG"
-  cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$GRADIO_PORT" >"$CF_LOG" 2>&1 &
+  # --protocol http2: forces HTTP/2 transport instead of the default QUIC.
+  # QUIC's edge buffering blocks Gradio's per-step SSE status updates, so the
+  # browser only sees a spinner until the whole job finishes. HTTP/2 streams
+  # cleanly and is what you want for any long-running generator.
+  cloudflared tunnel --no-autoupdate --protocol http2 \
+      --url "http://127.0.0.1:$GRADIO_PORT" >"$CF_LOG" 2>&1 &
   CF_PID=$!
   # cloudflared prints "Your quick Tunnel has been created! ... https://<rand>.trycloudflare.com"
   # within a few seconds of starting. Poll the log.
