@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import traceback
 from pathlib import Path
 from typing import Generator
@@ -50,6 +51,18 @@ def _get_client() -> ComfyUIClient:
     if _client is None:
         _client = ComfyUIClient()
     return _client
+
+
+def _format_duration(seconds: float) -> str:
+    """Render an ETA as e.g. '45s', '3m 20s', or '1h 12m'. Rounds whole seconds."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, s = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {s}s" if s else f"{minutes}m"
+    hours, m = divmod(minutes, 60)
+    return f"{hours}h {m}m" if m else f"{hours}h"
 
 
 def _annotate_faces(frame: np.ndarray) -> Image.Image | None:
@@ -267,38 +280,40 @@ def _run(
     detect_gender: str,
     enable_interp: bool,
     face_boost_strength: float,
-) -> Generator[tuple[str, str | None], None, None]:
-    """Generator yielding (status_text, output_video_path_or_None)."""
+) -> Generator[tuple, None, None]:
+    """Yields (status_text, target_preview_or_skip, result_video_or_skip)."""
     try:
         if not source_file or not target_video:
-            yield ("⚠ Please upload both a source image and a target video.", None)
+            yield ("⚠ Please upload both a source image and a target video.", gr.skip(), gr.skip())
             return
 
         client = _get_client()
         if not client.is_alive():
-            yield (f"⚠ ComfyUI is not reachable at {client.http_url}. Is the back-end up?", None)
+            yield (f"⚠ ComfyUI is not reachable at {client.http_url}. Is the back-end up?", gr.skip(), gr.skip())
             return
 
-        yield ("⏳ Uploading source image…", None)
+        # Show the input target alongside the eventual result so the user can compare
+        # side-by-side as it runs.
+        yield ("⏳ Uploading source image…", target_video, gr.skip())
         src: UploadedFile = client.upload(source_file)
 
-        yield ("⏳ Preparing target video…", None)
+        yield ("⏳ Preparing target video…", gr.skip(), gr.skip())
         target_path, prep_msg = _prepare_video(target_video)
         if prep_msg:
-            yield (f"⏳ {prep_msg}", None)
+            yield (f"⏳ {prep_msg}", gr.skip(), gr.skip())
 
         duration = _video_duration_s(target_path)
         if duration > _MAX_DURATION_S:
-            yield (f"⚠ Video too long ({duration/60:.1f} min). Max {_MAX_DURATION_S//60} min.", None)
+            yield (f"⚠ Video too long ({duration/60:.1f} min). Max {_MAX_DURATION_S//60} min.", gr.skip(), gr.skip())
             return
 
         seconds_per_chunk = (
             _CHUNK_S_WITH_RESTORE if face_restore_strength > 0 else _CHUNK_S_NO_RESTORE
         )
 
-        yield (f"⏳ Splitting into ~{seconds_per_chunk}s chunks…", None)
+        yield (f"⏳ Splitting into ~{seconds_per_chunk}s chunks…", gr.skip(), gr.skip())
         chunk_dir, chunks = _chunk_video(target_path, seconds_per_chunk)
-        yield (f"⏳ {len(chunks)} chunk{'s' if len(chunks)!=1 else ''} to process.", None)
+        yield (f"⏳ {len(chunks)} chunk{'s' if len(chunks)!=1 else ''} to process.", gr.skip(), gr.skip())
 
         template = load_template("wf_a_reactor")
         base_params = WfAParams(
@@ -313,13 +328,24 @@ def _run(
         )
 
         result_chunk_paths: list[str] = []
+        chunk_durations: list[float] = []
+        total_chunks = len(chunks)
         for i, chunk_path in enumerate(chunks, 1):
-            yield (f"⚙ Chunk {i}/{len(chunks)} — processing…", None)
+            # ETA: start showing once we have at least one chunk's actual duration.
+            if chunk_durations:
+                avg = sum(chunk_durations) / len(chunk_durations)
+                eta = avg * (total_chunks - (i - 1))
+                eta_str = f" · ~{_format_duration(eta)} remaining"
+            else:
+                eta_str = ""
+            yield (f"⚙ Chunk {i}/{total_chunks} — processing{eta_str}", gr.skip(), gr.skip())
+            t0 = time.time()
             result_chunk_paths.append(
                 _process_chunk(client, chunk_path, src.reference, base_params, template)
             )
+            chunk_durations.append(time.time() - t0)
 
-        yield (f"⏳ Concatenating {len(result_chunk_paths)} chunk{'s' if len(result_chunk_paths)!=1 else ''}…", None)
+        yield (f"⏳ Concatenating {len(result_chunk_paths)} chunk{'s' if len(result_chunk_paths)!=1 else ''}…", gr.skip(), gr.skip())
         final = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         _concat_videos(result_chunk_paths, final)
 
@@ -330,13 +356,13 @@ def _run(
         if target_path != target_video:
             Path(target_path).unlink(missing_ok=True)
 
-        yield ("✓ Done.", final)
+        yield ("✓ Done.", gr.skip(), final)
 
     except (ComfyUIError, WorkflowError) as exc:
-        yield (f"✗ {exc}", None)
+        yield (f"✗ {exc}", gr.skip(), gr.skip())
     except Exception as exc:  # noqa: BLE001 — UI surface
         traceback.print_exc()
-        yield (f"✗ Unexpected error: {exc}", None)
+        yield (f"✗ Unexpected error: {exc}", gr.skip(), gr.skip())
 
 
 def build_ui() -> gr.Blocks:
@@ -367,13 +393,15 @@ def build_ui() -> gr.Blocks:
                 run_btn = gr.Button("④ Execute", variant="primary", size="lg")
 
         status = gr.Textbox(label="Status", interactive=False)
-        result = gr.Video(label="Result", interactive=False)
+        with gr.Row():
+            target_preview = gr.Video(label="Target (original)", interactive=False)
+            result = gr.Video(label="Result (swapped)", interactive=False)
 
         run_btn.click(
             _run,
             inputs=[source, target, target_face_index, source_face_index, face_restore, detect_gender,
                     enable_interp, face_boost_strength],
-            outputs=[status, result],
+            outputs=[status, target_preview, result],
         )
 
         source.change(
