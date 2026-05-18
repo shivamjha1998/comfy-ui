@@ -26,8 +26,11 @@ class WorkflowError(RuntimeError):
 
 @dataclass
 class WfAParams:
-    source_image: str           # uploaded filename ref
+    source_image: str           # uploaded filename ref (the primary source)
     target_video: str
+    # When non-empty, ReActor receives a blended FACE_MODEL averaging the
+    # embeddings of [source_image, *extra_source_images]. Stronger identity.
+    extra_source_images: tuple[str, ...] = ()
     target_face_index: int = 0
     source_face_index: int = 0
     face_restore_strength: float = 0.85
@@ -73,10 +76,50 @@ def _set(graph: dict[str, Any], node_id: str, field: str, value: Any) -> None:
 def patch_wf_a(template: dict[str, Any], params: WfAParams) -> dict[str, Any]:
     g = _strip_meta(template)
     _set(g, "1", "video", params.target_video)
-    _set(g, "2", "image", params.source_image)
     _set(g, "3", "input_faces_index", str(params.target_face_index))
     _set(g, "3", "source_faces_index", str(params.source_face_index))
     _set(g, "3", "detect_gender_input", params.detect_gender)
+
+    # Source path. With a single source, node 2 (LoadImage) feeds ReActor's
+    # source_image input — the original wiring. With multiple sources, we
+    # rebuild that part of the graph to:
+    #   30..30+N    LoadImage per source
+    #   40..40+N-2  ImageBatch chain (pairwise: 30+31, then +32, then +33, ...)
+    #   50          ReActorBuildFaceModel(compute_method="Mean") averages the
+    #               embeddings into one FACE_MODEL
+    # Then ReActor reads from face_model instead of source_image.
+    extras = tuple(params.extra_source_images)
+    if not extras:
+        _set(g, "2", "image", params.source_image)
+    else:
+        all_sources = (params.source_image, *extras)
+        g.pop("2", None)
+        for i, ref in enumerate(all_sources):
+            g[str(30 + i)] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": ref},
+            }
+        prev: list[Any] = ["30", 0]
+        for i in range(1, len(all_sources)):
+            batch_id = str(40 + i - 1)
+            g[batch_id] = {
+                "class_type": "ImageBatch",
+                "inputs": {"image1": prev, "image2": [str(30 + i), 0]},
+            }
+            prev = [batch_id, 0]
+        g["50"] = {
+            "class_type": "ReActorBuildFaceModel",
+            "inputs": {
+                "save_mode": False,
+                "send_only": False,
+                "face_model_name": "blend",
+                "compute_method": "Mean",
+                "images": prev,
+            },
+        }
+        # ReActorFaceSwap takes EITHER source_image OR face_model. Switch.
+        g["3"]["inputs"].pop("source_image", None)
+        g["3"]["inputs"]["face_model"] = ["50", 0]
     # Face restoration toggle: strength <= 0 means "off". On a 16 GB Mac, GFPGAN
     # restoration is fine for short clips (~10 s) but eats too much unified memory
     # for longer clips and either silently writes zeros or OOM-kills ComfyUI.

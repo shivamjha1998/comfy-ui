@@ -273,6 +273,7 @@ def _process_chunk(
 
 def _run(
     source_file: str | None,
+    source_extra_files: list | None,
     target_video: str | None,
     target_face_index: int,
     source_face_index: int,
@@ -294,8 +295,20 @@ def _run(
 
         # Show the input target alongside the eventual result so the user can compare
         # side-by-side as it runs.
-        yield ("⏳ Uploading source image…", target_video, gr.skip())
+        # Gradio's File(file_count="multiple") returns either a list of NamedString
+        # objects (.name attribute) or filepath strings depending on version; handle both.
+        extras_raw = source_extra_files or []
+        extras_paths = [getattr(f, "name", f) for f in extras_raw]
+        n_total = 1 + len(extras_paths)
+
+        if extras_paths:
+            yield (f"⏳ Uploading {n_total} source photos for blended identity…", target_video, gr.skip())
+        else:
+            yield ("⏳ Uploading source image…", target_video, gr.skip())
         src: UploadedFile = client.upload(source_file)
+        extra_refs: list[str] = []
+        for p in extras_paths:
+            extra_refs.append(client.upload(p).reference)
 
         yield ("⏳ Preparing target video…", gr.skip(), gr.skip())
         target_path, prep_msg = _prepare_video(target_video)
@@ -318,6 +331,7 @@ def _run(
         template = load_template("wf_a_reactor")
         base_params = WfAParams(
             source_image=src.reference,
+            extra_source_images=tuple(extra_refs),
             target_video="<set-per-chunk>",
             target_face_index=int(target_face_index),
             source_face_index=int(source_face_index),
@@ -374,6 +388,12 @@ def build_ui() -> gr.Blocks:
                 source = gr.Image(label="① Source face", type="filepath", sources=["upload"])
                 with gr.Accordion("Source Face Index Preview", open=False):
                     source_faces_preview = gr.Image(interactive=False, show_label=False)
+                source_extra = gr.File(
+                    label="① Additional source photos (optional — uploads more photos of the same person to average their face embeddings; stronger identity)",
+                    file_count="multiple",
+                    file_types=["image"],
+                    type="filepath",
+                )
                 target = gr.Video(label="② Target video", sources=["upload"])
                 with gr.Accordion("Target Face Index Preview", open=False):
                     target_faces_preview = gr.Image(interactive=False, show_label=False)
@@ -399,8 +419,8 @@ def build_ui() -> gr.Blocks:
 
         run_btn.click(
             _run,
-            inputs=[source, target, target_face_index, source_face_index, face_restore, detect_gender,
-                    enable_interp, face_boost_strength],
+            inputs=[source, source_extra, target, target_face_index, source_face_index, face_restore,
+                    detect_gender, enable_interp, face_boost_strength],
             outputs=[status, target_preview, result],
         )
 
