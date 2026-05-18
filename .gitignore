@@ -53,3 +53,6 @@ ComfyUI/
 
 # Runtime logs from run.sh
 .logs/
+
+# Persistent job history (saved by gradio_app's _persist_result)
+.outputs/

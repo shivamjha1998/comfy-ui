@@ -20,12 +20,14 @@ import subprocess
 import tempfile
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
 import cv2
 import numpy as np
 import gradio as gr
+import requests
 from imageio_ffmpeg import get_ffmpeg_exe
 from PIL import Image
 
@@ -35,6 +37,7 @@ from .workflow import WfAParams, WorkflowError, load_template, patch_wf_a
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _FACE_DETECTOR_PATH = _REPO_ROOT / "ComfyUI" / "models" / "ultralytics" / "bbox" / "face_yolov8m.pt"
+_OUTPUTS_DIR = _REPO_ROOT / ".outputs"
 
 _client: ComfyUIClient | None = None
 _MAX_WIDTH = 1280
@@ -51,6 +54,46 @@ def _get_client() -> ComfyUIClient:
     if _client is None:
         _client = ComfyUIClient()
     return _client
+
+
+def _list_past_jobs() -> list[tuple[str, str]]:
+    """Return [(display_label, filepath)] for past saved results, newest first."""
+    _OUTPUTS_DIR.mkdir(exist_ok=True)
+    files = sorted(_OUTPUTS_DIR.glob("*.mp4"), reverse=True)
+    out: list[tuple[str, str]] = []
+    for f in files:
+        # Stem looks like 2026-05-17_14-32-15 — show as "2026-05-17 14:32:15".
+        stem = f.stem
+        if len(stem) == 19 and stem[10] == "_":
+            label = stem[:10] + "  " + stem[11:].replace("-", ":")
+        else:
+            label = stem
+        out.append((label, str(f)))
+    return out
+
+
+def _persist_result(temp_path: str) -> str:
+    """Copy a finished result mp4 into .outputs/ under a timestamped name so it
+    survives a page refresh / restart. Returns the new path."""
+    _OUTPUTS_DIR.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    dest = _OUTPUTS_DIR / f"{stamp}.mp4"
+    n = 1
+    while dest.exists():
+        dest = _OUTPUTS_DIR / f"{stamp}_{n}.mp4"
+        n += 1
+    shutil.copy(temp_path, dest)
+    return str(dest)
+
+
+def _cancel_running_job() -> str:
+    """Tell ComfyUI to interrupt whatever it's executing. Best-effort."""
+    try:
+        client = _get_client()
+        requests.post(f"{client.http_url}/interrupt", timeout=3)
+    except Exception:  # noqa: BLE001 — never let cancel fail loudly
+        pass
+    return "✗ Cancelled by user."
 
 
 def _format_duration(seconds: float) -> str:
@@ -282,7 +325,15 @@ def _run(
     enable_interp: bool,
     face_boost_strength: float,
 ) -> Generator[tuple, None, None]:
-    """Yields (status_text, target_preview_or_skip, result_video_or_skip)."""
+    """Yields (status_text, target_preview_or_skip, result_video_or_skip).
+
+    Cleanup of chunk intermediates lives in `finally` so cancelling the run
+    (GeneratorExit) or any unexpected exception still leaves the working
+    directory tidy.
+    """
+    chunk_dir: Path | None = None
+    result_chunk_paths: list[str] = []
+    target_path: str | None = None
     try:
         if not source_file or not target_video:
             yield ("⚠ Please upload both a source image and a target video.", gr.skip(), gr.skip())
@@ -341,7 +392,6 @@ def _run(
             face_boost_strength=float(face_boost_strength),
         )
 
-        result_chunk_paths: list[str] = []
         chunk_durations: list[float] = []
         total_chunks = len(chunks)
         for i, chunk_path in enumerate(chunks, 1):
@@ -363,20 +413,26 @@ def _run(
         final = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         _concat_videos(result_chunk_paths, final)
 
-        # Cleanup intermediates (best-effort)
-        for p in result_chunk_paths:
-            Path(p).unlink(missing_ok=True)
-        shutil.rmtree(chunk_dir, ignore_errors=True)
-        if target_path != target_video:
-            Path(target_path).unlink(missing_ok=True)
+        # Persist to .outputs/ so the user can re-download from the Past Jobs
+        # list even after a browser refresh.
+        persisted = _persist_result(final)
+        Path(final).unlink(missing_ok=True)
 
-        yield ("✓ Done.", gr.skip(), final)
+        yield ("✓ Done.", gr.skip(), persisted)
 
     except (ComfyUIError, WorkflowError) as exc:
         yield (f"✗ {exc}", gr.skip(), gr.skip())
     except Exception as exc:  # noqa: BLE001 — UI surface
         traceback.print_exc()
         yield (f"✗ Unexpected error: {exc}", gr.skip(), gr.skip())
+    finally:
+        # Runs on success, error, AND cancel (GeneratorExit).
+        for p in result_chunk_paths:
+            Path(p).unlink(missing_ok=True)
+        if chunk_dir is not None:
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+        if target_path is not None and target_path != target_video:
+            Path(target_path).unlink(missing_ok=True)
 
 
 def build_ui() -> gr.Blocks:
@@ -410,18 +466,57 @@ def build_ui() -> gr.Blocks:
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")
                 face_boost_strength = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
                                                 label="Face boost strength (0 = off; higher = sharper face but can warp edges)")
-                run_btn = gr.Button("④ Execute", variant="primary", size="lg")
+                with gr.Row():
+                    run_btn = gr.Button("④ Execute", variant="primary", size="lg")
+                    cancel_btn = gr.Button("✗ Cancel", variant="stop", size="lg")
 
         status = gr.Textbox(label="Status", interactive=False)
         with gr.Row():
             target_preview = gr.Video(label="Target (original)", interactive=False)
             result = gr.Video(label="Result (swapped)", interactive=False)
 
-        run_btn.click(
+        gr.Markdown("### Past jobs")
+        gr.Markdown(
+            "Completed swaps are saved under `.outputs/` and listed here even after a page refresh. "
+            "Pick one to replay or right-click the player to download."
+        )
+        with gr.Row():
+            past_dropdown = gr.Dropdown(
+                choices=_list_past_jobs(),
+                label="Past results",
+                interactive=True,
+            )
+            past_refresh_btn = gr.Button("🔄 Refresh", scale=0)
+        past_video = gr.Video(label="Past result playback", interactive=False)
+
+        run_event = run_btn.click(
             _run,
             inputs=[source, source_extra, target, target_face_index, source_face_index, face_restore,
                     detect_gender, enable_interp, face_boost_strength],
             outputs=[status, target_preview, result],
+        )
+        # Re-list past jobs once the run finishes so the new result appears in the dropdown.
+        run_event.then(
+            fn=lambda: gr.update(choices=_list_past_jobs()),
+            outputs=[past_dropdown],
+        )
+
+        # Cancel: tell ComfyUI to interrupt + cancel the Gradio event (raises
+        # GeneratorExit inside _run, which our finally-block handles).
+        cancel_btn.click(
+            fn=_cancel_running_job,
+            outputs=[status],
+            cancels=[run_event],
+        )
+
+        past_dropdown.change(
+            fn=lambda p: p,
+            inputs=[past_dropdown],
+            outputs=[past_video],
+        )
+        past_refresh_btn.click(
+            fn=lambda: gr.update(choices=_list_past_jobs()),
+            outputs=[past_dropdown],
         )
 
         source.change(
