@@ -91,6 +91,17 @@ if [ ! -f "$YOLO_PATH" ]; then
     https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8m.pt
 fi
 
+# inswapper_128_fp16: half-precision variant of inswapper_128 ReActor's install.py
+# auto-downloads. The workflow references the fp16 file for ~30% faster per-frame
+# swap with no perceptible quality loss.
+SWAP_FP16_PATH="$MODELS/insightface/inswapper_128_fp16.onnx"
+if [ ! -f "$SWAP_FP16_PATH" ]; then
+  echo "[setup] downloading inswapper_128_fp16 (~265 MB)"
+  mkdir -p "$(dirname "$SWAP_FP16_PATH")"
+  curl -L --fail --progress-bar -o "$SWAP_FP16_PATH" \
+    https://huggingface.co/datasets/Gourieff/ReActor/resolve/main/models/inswapper_128_fp16.onnx
+fi
+
 # ─── Mac-specific ReActor patches ─────────────────────────────────────────
 echo "[setup] applying Mac ReActor patches"
 bash "$REPO_DIR/scripts/patch_reactor_mac.sh"

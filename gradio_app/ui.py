@@ -108,6 +108,56 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h {m}m" if m else f"{hours}h"
 
 
+def _prepare_source(path: str, face_index: int) -> tuple[str, bool]:
+    """Pre-crop the chosen face out of a source image before sending it to ReActor.
+
+    Returns (path_to_use, was_cropped). On success — face_yolov8m detected at
+    least one face — returns a temp PNG containing the face at `face_index`
+    (sorted largest-first) with ~60 % padding for hair/jaw/neck context, plus
+    True. The caller should then force ReActor's source_faces_index to "0"
+    because the cropped image only has one face.
+
+    On any failure (detector missing, ultralytics import error, no face found),
+    returns the original path + False; the caller should fall back to letting
+    ReActor's own buffalo_l pick the face via the user-supplied index.
+    """
+    if not _FACE_DETECTOR_PATH.is_file():
+        return path, False
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        return path, False
+
+    img = cv2.imread(path)
+    if img is None:
+        return path, False
+
+    model = YOLO(str(_FACE_DETECTOR_PATH))
+    results = model(img, verbose=False)
+    if not results or len(results[0].boxes) == 0:
+        return path, False
+
+    boxes = results[0].boxes.xyxy.cpu().numpy()
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    sorted_indices = np.argsort(areas)[::-1]
+    sorted_boxes = boxes[sorted_indices]
+
+    idx = face_index if 0 <= face_index < len(sorted_boxes) else 0
+    x1, y1, x2, y2 = sorted_boxes[idx]
+    h, w = img.shape[:2]
+    bw, bh = x2 - x1, y2 - y1
+    px, py = bw * 0.6, bh * 0.6
+    cx1 = max(0, int(x1 - px))
+    cy1 = max(0, int(y1 - py))
+    cx2 = min(w, int(x2 + px))
+    cy2 = min(h, int(y2 + py))
+    cropped = img[cy1:cy2, cx1:cx2]
+
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+    cv2.imwrite(out, cropped)
+    return out, True
+
+
 def _annotate_faces(frame: np.ndarray) -> Image.Image | None:
     """Run YOLO face detection on a BGR frame, sort by area (largest to smallest),
     draw bounding boxes with index numbers, and return as a PIL Image.
@@ -353,13 +403,28 @@ def _run(
         n_total = 1 + len(extras_paths)
 
         if extras_paths:
-            yield (f"⏳ Uploading {n_total} source photos for blended identity…", target_video, gr.skip())
+            yield (f"⏳ Pre-cropping faces from {n_total} source photos…", target_video, gr.skip())
         else:
-            yield ("⏳ Uploading source image…", target_video, gr.skip())
-        src: UploadedFile = client.upload(source_file)
-        extra_refs: list[str] = []
+            yield ("⏳ Pre-cropping face from source image…", target_video, gr.skip())
+        # Pre-crop each source to just the chosen face (primary uses the user's
+        # source_face_index; extras always take the largest detected face).
+        # Cropped sources tighten ReActor's embedding by removing background context.
+        prepared_primary, primary_cropped = _prepare_source(source_file, int(source_face_index))
+        prepared_extras: list[str] = []
         for p in extras_paths:
+            pp, _ = _prepare_source(p, 0)
+            prepared_extras.append(pp)
+
+        yield ("⏳ Uploading source(s)…", gr.skip(), gr.skip())
+        src: UploadedFile = client.upload(prepared_primary)
+        extra_refs: list[str] = []
+        for p in prepared_extras:
             extra_refs.append(client.upload(p).reference)
+
+        # When we pre-cropped, the uploaded source has exactly one face — index 0.
+        # When YOLO didn't detect anything, fall back to the user's chosen index
+        # so ReActor's own face detection still picks the right face.
+        effective_source_face_index = 0 if primary_cropped else int(source_face_index)
 
         yield ("⏳ Preparing target video…", gr.skip(), gr.skip())
         target_path, prep_msg = _prepare_video(target_video)
@@ -385,7 +450,7 @@ def _run(
             extra_source_images=tuple(extra_refs),
             target_video="<set-per-chunk>",
             target_face_index=int(target_face_index),
-            source_face_index=int(source_face_index),
+            source_face_index=effective_source_face_index,
             face_restore_strength=float(face_restore_strength),
             detect_gender=detect_gender,
             enable_frame_interp=bool(enable_interp),
