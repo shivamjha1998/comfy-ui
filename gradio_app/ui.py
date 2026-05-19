@@ -371,7 +371,6 @@ def _run(
     target_face_index: int,
     source_face_index: int,
     face_restore_strength: float,
-    detect_gender: str,
     enable_interp: bool,
     face_boost_strength: float,
 ) -> Generator[tuple, None, None]:
@@ -452,7 +451,6 @@ def _run(
             target_face_index=int(target_face_index),
             source_face_index=effective_source_face_index,
             face_restore_strength=float(face_restore_strength),
-            detect_gender=detect_gender,
             enable_frame_interp=bool(enable_interp),
             face_boost_strength=float(face_boost_strength),
         )
@@ -526,7 +524,6 @@ def build_ui() -> gr.Blocks:
                     source_face_index = gr.Number(value=0, precision=0, label="Source face index (0 = first detected)")
                 face_restore = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
                                          label="Face restore strength (0 = off; > 0 = GFPGAN restoration per chunk)")
-                detect_gender = gr.Dropdown(["no", "male", "female"], value="no", label="Gender filter")
                 enable_interp = gr.Checkbox(value=False,
                                             label="Enable RIFE frame interpolation (2×, smoother motion)")
                 face_boost_strength = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
@@ -557,7 +554,7 @@ def build_ui() -> gr.Blocks:
         run_event = run_btn.click(
             _run,
             inputs=[source, source_extra, target, target_face_index, source_face_index, face_restore,
-                    detect_gender, enable_interp, face_boost_strength],
+                    enable_interp, face_boost_strength],
             outputs=[status, target_preview, result],
         )
         # Re-list past jobs once the run finishes so the new result appears in the dropdown.

@@ -34,7 +34,6 @@ class WfAParams:
     target_face_index: int = 0
     source_face_index: int = 0
     face_restore_strength: float = 0.85
-    detect_gender: str = "no"   # "no" | "male" | "female"
     enable_frame_interp: bool = False
     # ReActor's per-face-crop upscale pass. 0.0 = off entirely; >0 = enabled at
     # that blend visibility (1.0 = full boost replace, 0.1 = barely-perceptible
@@ -78,7 +77,6 @@ def patch_wf_a(template: dict[str, Any], params: WfAParams) -> dict[str, Any]:
     _set(g, "1", "video", params.target_video)
     _set(g, "3", "input_faces_index", str(params.target_face_index))
     _set(g, "3", "source_faces_index", str(params.source_face_index))
-    _set(g, "3", "detect_gender_input", params.detect_gender)
 
     # Source path. With a single source, node 2 (LoadImage) feeds ReActor's
     # source_image input — the original wiring. With multiple sources, we
