@@ -503,13 +503,41 @@ THEME = gr.themes.Soft(
     neutral_hue="stone",
     spacing_size="lg",
     radius_size="lg",
+).set(
+    # Background tokens sampled from the styleguide reference: warm cream page,
+    # crisp white surfaces, soft warm-gray borders, no harsh shadows.
+    body_background_fill="#FAF7F2",
+    body_background_fill_dark="#1A1815",
+    background_fill_primary="#FFFFFF",
+    background_fill_primary_dark="#262421",
+    background_fill_secondary="#FBF8F3",
+    border_color_primary="#E5E2DC",
+    block_border_width="1px",
+    block_shadow="0 2px 10px rgba(50, 40, 30, 0.05)",
+    panel_background_fill="#FFFFFF",
+    # Coral-orange primary (lifted off the styleguide buttons).
+    button_primary_background_fill="#F76C3F",
+    button_primary_background_fill_hover="#E55A2D",
+    button_primary_text_color="#FFFFFF",
 )
 
 CSS = """
-.gradio-container { max-width: 1200px !important; margin: 0 auto; }
-#hero { padding: 8px 0 4px; }
-#hero h1 { font-size: 2.6em; font-weight: 800; margin: 0; line-height: 1.1; }
-#hero p  { color: var(--body-text-color-subdued); margin-top: 4px; font-size: 1.05em; }
+.gradio-container { max-width: 1200px !important; margin: 0 auto; padding: 24px 32px !important; }
+
+/* Hero title — generous space, big bold heading like the styleguide */
+#hero { padding: 12px 0 24px; }
+#hero h1 { font-size: 2.6em; font-weight: 800; margin: 0; line-height: 1.15; letter-spacing: -0.01em; }
+#hero p  { color: var(--body-text-color-subdued); margin-top: 6px; font-size: 1.05em; }
+
+/* Headings — breathing room top/bottom so sections don't crowd each other */
+h2, h3, h4 { margin-top: 24px !important; margin-bottom: 12px !important; }
+
+/* Tab content — pad the inside of each tab panel so controls aren't pressed to the edge */
+.tabs > .tab-nav { margin-bottom: 12px; }
+.tabitem { padding: 20px 4px 8px !important; }
+
+/* Tighten paragraph spacing under tab descriptions */
+.tabitem > .markdown { margin-bottom: 8px; }
 """
 
 
@@ -527,12 +555,17 @@ def build_ui() -> gr.Blocks:
                         source = gr.Image(label="① Source face", type="filepath", sources=["upload"])
                         with gr.Accordion("Source Face Index Preview", open=False):
                             source_faces_preview = gr.Image(interactive=False, show_label=False)
-                        source_extra = gr.File(
-                            label="① Additional source photos (optional — uploads more photos of the same person to average their face embeddings; stronger identity)",
-                            file_count="multiple",
-                            file_types=["image"],
-                            type="filepath",
-                        )
+                        with gr.Accordion("Additional source photos (optional)", open=False):
+                            gr.Markdown(
+                                "Add more photos of the same person here to average their face "
+                                "embeddings — gives a stronger, more stable identity."
+                            )
+                            source_extra = gr.File(
+                                file_count="multiple",
+                                file_types=["image"],
+                                type="filepath",
+                                show_label=False,
+                            )
                         target = gr.Video(label="② Target video", sources=["upload"])
                         with gr.Accordion("Target Face Index Preview", open=False):
                             target_faces_preview = gr.Image(interactive=False, show_label=False)
