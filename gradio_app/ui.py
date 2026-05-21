@@ -498,66 +498,88 @@ def _run(
             Path(target_path).unlink(missing_ok=True)
 
 
+THEME = gr.themes.Soft(
+    primary_hue="orange",
+    neutral_hue="stone",
+    spacing_size="lg",
+    radius_size="lg",
+)
+
+CSS = """
+.gradio-container { max-width: 1200px !important; margin: 0 auto; }
+#hero { padding: 8px 0 4px; }
+#hero h1 { font-size: 2.6em; font-weight: 800; margin: 0; line-height: 1.1; }
+#hero p  { color: var(--body-text-color-subdued); margin-top: 4px; font-size: 1.05em; }
+"""
+
+
 def build_ui() -> gr.Blocks:
+    # Gradio 6.0 moved theme/css to launch() — see __main__.py for where they're applied.
     with gr.Blocks(title="Face-Swap Demo") as demo:
-        gr.Markdown("# Face-Swap Demo\n*Powered by ComfyUI + ReActor*")
+        with gr.Group(elem_id="hero"):
+            gr.Markdown("# Face-Swap Demo\nPowered by ComfyUI + ReActor")
 
-        with gr.Row():
-            with gr.Column(scale=1):
-                source = gr.Image(label="① Source face", type="filepath", sources=["upload"])
-                with gr.Accordion("Source Face Index Preview", open=False):
-                    source_faces_preview = gr.Image(interactive=False, show_label=False)
-                source_extra = gr.File(
-                    label="① Additional source photos (optional — uploads more photos of the same person to average their face embeddings; stronger identity)",
-                    file_count="multiple",
-                    file_types=["image"],
-                    type="filepath",
+        with gr.Tabs():
+            # ─── Tab 1: Swap ─────────────────────────────────────────────
+            with gr.Tab("Swap"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        source = gr.Image(label="① Source face", type="filepath", sources=["upload"])
+                        with gr.Accordion("Source Face Index Preview", open=False):
+                            source_faces_preview = gr.Image(interactive=False, show_label=False)
+                        source_extra = gr.File(
+                            label="① Additional source photos (optional — uploads more photos of the same person to average their face embeddings; stronger identity)",
+                            file_count="multiple",
+                            file_types=["image"],
+                            type="filepath",
+                        )
+                        target = gr.Video(label="② Target video", sources=["upload"])
+                        with gr.Accordion("Target Face Index Preview", open=False):
+                            target_faces_preview = gr.Image(interactive=False, show_label=False)
+
+                    with gr.Column(scale=1):
+                        gr.Markdown("### ③ Parameters")
+                        with gr.Row():
+                            target_face_index = gr.Number(value=0, precision=0, label="Target face index (0 = first detected)")
+                            source_face_index = gr.Number(value=0, precision=0, label="Source face index (0 = first detected)")
+                        face_restore = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
+                                                 label="Face restore strength (0 = off; > 0 = GFPGAN restoration per chunk)")
+                        enable_interp = gr.Checkbox(value=False,
+                                                    label="Enable RIFE frame interpolation (2×, smoother motion)")
+                        face_boost_strength = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
+                                                        label="Face boost strength (0 = off; higher = sharper face but can warp edges)")
+                        with gr.Row():
+                            run_btn = gr.Button("④ Execute", variant="primary", size="lg")
+                            cancel_btn = gr.Button("✗ Cancel", variant="stop", size="lg")
+
+                status = gr.Textbox(label="Status", interactive=False)
+                with gr.Row():
+                    target_preview = gr.Video(label="Target (original)", interactive=False)
+                    result = gr.Video(label="Result (swapped)", interactive=False)
+
+            # ─── Tab 2: History ──────────────────────────────────────────
+            with gr.Tab("History"):
+                gr.Markdown(
+                    "Completed swaps are saved under `.outputs/` and listed here even after a page refresh. "
+                    "Pick one to replay or right-click the player to download."
                 )
-                target = gr.Video(label="② Target video", sources=["upload"])
-                with gr.Accordion("Target Face Index Preview", open=False):
-                    target_faces_preview = gr.Image(interactive=False, show_label=False)
-
-            with gr.Column(scale=1):
-                gr.Markdown("### ③ Parameters")
                 with gr.Row():
-                    target_face_index = gr.Number(value=0, precision=0, label="Target face index (0 = first detected)")
-                    source_face_index = gr.Number(value=0, precision=0, label="Source face index (0 = first detected)")
-                face_restore = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
-                                         label="Face restore strength (0 = off; > 0 = GFPGAN restoration per chunk)")
-                enable_interp = gr.Checkbox(value=False,
-                                            label="Enable RIFE frame interpolation (2×, smoother motion)")
-                face_boost_strength = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
-                                                label="Face boost strength (0 = off; higher = sharper face but can warp edges)")
-                with gr.Row():
-                    run_btn = gr.Button("④ Execute", variant="primary", size="lg")
-                    cancel_btn = gr.Button("✗ Cancel", variant="stop", size="lg")
+                    past_dropdown = gr.Dropdown(
+                        choices=_list_past_jobs(),
+                        label="Past results",
+                        interactive=True,
+                    )
+                    past_refresh_btn = gr.Button("🔄 Refresh", scale=0)
+                past_video = gr.Video(label="Past result playback", interactive=False)
 
-        status = gr.Textbox(label="Status", interactive=False)
-        with gr.Row():
-            target_preview = gr.Video(label="Target (original)", interactive=False)
-            result = gr.Video(label="Result (swapped)", interactive=False)
-
-        gr.Markdown("### Past jobs")
-        gr.Markdown(
-            "Completed swaps are saved under `.outputs/` and listed here even after a page refresh. "
-            "Pick one to replay or right-click the player to download."
-        )
-        with gr.Row():
-            past_dropdown = gr.Dropdown(
-                choices=_list_past_jobs(),
-                label="Past results",
-                interactive=True,
-            )
-            past_refresh_btn = gr.Button("🔄 Refresh", scale=0)
-        past_video = gr.Video(label="Past result playback", interactive=False)
-
+        # ─── Event handlers (cross-tab references work since all components are in the same Blocks) ─
         run_event = run_btn.click(
             _run,
             inputs=[source, source_extra, target, target_face_index, source_face_index, face_restore,
                     enable_interp, face_boost_strength],
             outputs=[status, target_preview, result],
         )
-        # Re-list past jobs once the run finishes so the new result appears in the dropdown.
+        # Re-list past jobs once the run finishes so the new result appears in the History tab.
         run_event.then(
             fn=lambda: gr.update(choices=_list_past_jobs()),
             outputs=[past_dropdown],
