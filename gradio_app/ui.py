@@ -522,22 +522,64 @@ THEME = gr.themes.Soft(
 )
 
 CSS = """
-.gradio-container { max-width: 1200px !important; margin: 0 auto; padding: 24px 32px !important; }
+/* Full-width container — was capped at 1200px; styleguide layout wants the
+   whole screen, with generous side padding so content doesn't kiss the edge. */
+.gradio-container { max-width: none !important; padding: 24px 40px !important; }
 
 /* Hero title — generous space, big bold heading like the styleguide */
-#hero { padding: 12px 0 24px; }
+#hero { padding: 12px 0 28px; }
 #hero h1 { font-size: 2.6em; font-weight: 800; margin: 0; line-height: 1.15; letter-spacing: -0.01em; }
 #hero p  { color: var(--body-text-color-subdued); margin-top: 6px; font-size: 1.05em; }
 
 /* Headings — breathing room top/bottom so sections don't crowd each other */
-h2, h3, h4 { margin-top: 24px !important; margin-bottom: 12px !important; }
+h2, h3, h4 { margin-top: 16px !important; margin-bottom: 12px !important; }
 
-/* Tab content — pad the inside of each tab panel so controls aren't pressed to the edge */
-.tabs > .tab-nav { margin-bottom: 12px; }
-.tabitem { padding: 20px 4px 8px !important; }
+/* Tab nav — minimal text-style tabs with a coral underline on active.
+   Mirrors the "General · Analytics · Settings" tab pattern in the styleguide. */
+.tabs > .tab-nav {
+  border-bottom: 1px solid var(--border-color-primary);
+  margin-bottom: 16px;
+  gap: 4px;
+}
+.tabs > .tab-nav button {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  padding: 10px 18px !important;
+  color: var(--body-text-color-subdued);
+  font-weight: 600;
+}
+.tabs > .tab-nav button.selected {
+  border-bottom-color: #F76C3F !important;
+  color: var(--body-text-color) !important;
+  background: transparent !important;
+}
 
-/* Tighten paragraph spacing under tab descriptions */
-.tabitem > .markdown { margin-bottom: 8px; }
+/* Tab content padding so controls aren't pressed to the edge */
+.tabitem { padding: 8px 4px !important; }
+.tabitem > .markdown { margin-bottom: 12px; }
+
+/* Card surfaces — white bg, soft elevation, warm-gray border. Wrap major
+   sections (inputs, parameters, output, history) in gr.Group(elem_classes="section-card")
+   to lift them off the cream page background like the styleguide's card examples. */
+.section-card {
+  background: #FFFFFF !important;
+  border: 1px solid var(--border-color-primary) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 2px 10px rgba(50, 40, 30, 0.05) !important;
+  padding: 20px !important;
+}
+.section-card + .section-card { margin-top: 20px; }
+
+/* Status textbox styled like the styleguide's alert pills */
+#status-alert textarea {
+  background: #FBF8F3 !important;
+  border-left: 3px solid #F76C3F !important;
+  border-radius: 8px !important;
+  padding: 12px 16px !important;
+  font-weight: 500;
+}
 """
 
 
@@ -552,58 +594,62 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("Swap"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        source = gr.Image(label="① Source face", type="filepath", sources=["upload"])
-                        with gr.Accordion("Source Face Index Preview", open=False):
-                            source_faces_preview = gr.Image(interactive=False, show_label=False)
-                        with gr.Accordion("Additional source photos (optional)", open=False):
-                            gr.Markdown(
-                                "Add more photos of the same person here to average their face "
-                                "embeddings — gives a stronger, more stable identity."
-                            )
-                            source_extra = gr.File(
-                                file_count="multiple",
-                                file_types=["image"],
-                                type="filepath",
-                                show_label=False,
-                            )
-                        target = gr.Video(label="② Target video", sources=["upload"])
-                        with gr.Accordion("Target Face Index Preview", open=False):
-                            target_faces_preview = gr.Image(interactive=False, show_label=False)
+                        with gr.Group(elem_classes="section-card"):
+                            source = gr.Image(label="① Source face", type="filepath", sources=["upload"])
+                            with gr.Accordion("Source Face Index Preview", open=False):
+                                source_faces_preview = gr.Image(interactive=False, show_label=False)
+                            with gr.Accordion("Additional source photos (optional)", open=False):
+                                gr.Markdown(
+                                    "Add more photos of the same person here to average their face "
+                                    "embeddings — gives a stronger, more stable identity."
+                                )
+                                source_extra = gr.File(
+                                    file_count="multiple",
+                                    file_types=["image"],
+                                    type="filepath",
+                                    show_label=False,
+                                )
+                            target = gr.Video(label="② Target video", sources=["upload"])
+                            with gr.Accordion("Target Face Index Preview", open=False):
+                                target_faces_preview = gr.Image(interactive=False, show_label=False)
 
                     with gr.Column(scale=1):
-                        gr.Markdown("### ③ Parameters")
-                        with gr.Row():
-                            target_face_index = gr.Number(value=0, precision=0, label="Target face index (0 = first detected)")
-                            source_face_index = gr.Number(value=0, precision=0, label="Source face index (0 = first detected)")
-                        face_restore = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
-                                                 label="Face restore strength (0 = off; > 0 = GFPGAN restoration per chunk)")
-                        enable_interp = gr.Checkbox(value=False,
-                                                    label="Enable RIFE frame interpolation (2×, smoother motion)")
-                        face_boost_strength = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
-                                                        label="Face boost strength (0 = off; higher = sharper face but can warp edges)")
-                        with gr.Row():
-                            run_btn = gr.Button("④ Execute", variant="primary", size="lg")
-                            cancel_btn = gr.Button("✗ Cancel", variant="stop", size="lg")
+                        with gr.Group(elem_classes="section-card"):
+                            gr.Markdown("### ③ Parameters")
+                            with gr.Row():
+                                target_face_index = gr.Number(value=0, precision=0, label="Target face index (0 = first detected)")
+                                source_face_index = gr.Number(value=0, precision=0, label="Source face index (0 = first detected)")
+                            face_restore = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
+                                                     label="Face restore strength (0 = off; > 0 = GFPGAN restoration per chunk)")
+                            enable_interp = gr.Checkbox(value=False,
+                                                        label="Enable RIFE frame interpolation (2×, smoother motion)")
+                            face_boost_strength = gr.Slider(0.0, 1.0, value=0.6, step=0.05,
+                                                            label="Face boost strength (0 = off; higher = sharper face but can warp edges)")
+                            with gr.Row():
+                                run_btn = gr.Button("④ Execute", variant="primary", size="lg")
+                                cancel_btn = gr.Button("✗ Cancel", variant="stop", size="lg")
 
-                status = gr.Textbox(label="Status", interactive=False)
-                with gr.Row():
-                    target_preview = gr.Video(label="Target (original)", interactive=False)
-                    result = gr.Video(label="Result (swapped)", interactive=False)
+                with gr.Group(elem_classes="section-card"):
+                    status = gr.Textbox(label="Status", interactive=False, elem_id="status-alert")
+                    with gr.Row():
+                        target_preview = gr.Video(label="Target (original)", interactive=False)
+                        result = gr.Video(label="Result (swapped)", interactive=False)
 
             # ─── Tab 2: History ──────────────────────────────────────────
             with gr.Tab("History"):
-                gr.Markdown(
-                    "Completed swaps are saved under `.outputs/` and listed here even after a page refresh. "
-                    "Pick one to replay or right-click the player to download."
-                )
-                with gr.Row():
-                    past_dropdown = gr.Dropdown(
-                        choices=_list_past_jobs(),
-                        label="Past results",
-                        interactive=True,
+                with gr.Group(elem_classes="section-card"):
+                    gr.Markdown(
+                        "Completed swaps are saved under `.outputs/` and listed here even after a page refresh. "
+                        "Pick one to replay or right-click the player to download."
                     )
-                    past_refresh_btn = gr.Button("🔄 Refresh", scale=0)
-                past_video = gr.Video(label="Past result playback", interactive=False)
+                    with gr.Row():
+                        past_dropdown = gr.Dropdown(
+                            choices=_list_past_jobs(),
+                            label="Past results",
+                            interactive=True,
+                        )
+                        past_refresh_btn = gr.Button("🔄 Refresh", scale=0)
+                    past_video = gr.Video(label="Past result playback", interactive=False)
 
         # ─── Event handlers (cross-tab references work since all components are in the same Blocks) ─
         run_event = run_btn.click(
